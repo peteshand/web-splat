@@ -134,6 +134,9 @@ pub struct WindowContext {
     window: Arc<Window>,
     scale_factor: f32,
 
+    #[cfg(target_arch = "wasm32")]
+    prev_touch_pos: Option<(f64, f64)>,
+
     pc: PointCloud,
     pointcloud_file_path: Option<PathBuf>,
     renderer: GaussianRenderer,
@@ -261,6 +264,8 @@ impl WindowContext {
             window,
             surface,
             config,
+            #[cfg(target_arch = "wasm32")]
+            prev_touch_pos: None,
             renderer,
             splatting_args: SplattingArgs {
                 camera: view_camera,
@@ -717,6 +722,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                 let elm = web_sys::Element::from(canvas);
                 elm.set_attribute("style", "width: 100%; height: 100%;")
                     .unwrap();
+                elm.set_attribute("touch-action", "none").unwrap();
                 body.append_child(&elm).ok()
             })
             .expect("couldn't append canvas to document body");
@@ -848,7 +854,41 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     winit::event::MouseButton::Right => state.controller.right_mouse_pressed = *button_state == ElementState::Pressed,
                     _=>{}
                 }
-            }
+            },
+            WindowEvent::Touch(touch) => {
+                use winit::event::TouchPhase;
+            
+                match touch.phase {
+                    TouchPhase::Started => {
+                        log::info!("Touch started at: {:?}", touch.location);
+                        state.controller.left_mouse_pressed = true;
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            state.prev_touch_pos = Some((touch.location.x, touch.location.y));
+                        }
+                    }
+                    TouchPhase::Moved => {
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            if let Some((prev_x, prev_y)) = state.prev_touch_pos {
+                                let dx = (touch.location.x - prev_x) as f32;
+                                let dy = (touch.location.y - prev_y) as f32;
+                                state.controller.process_mouse(dx, dy);
+                            }
+                            state.prev_touch_pos = Some((touch.location.x, touch.location.y));
+                        }
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        log::info!("Touch ended or cancelled");
+                        state.controller.left_mouse_pressed = false;
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            state.prev_touch_pos = None;
+                        }
+                    }
+                }
+            },          
+
             WindowEvent::RedrawRequested => {
                 if !config.no_vsync{
                     // make sure the next redraw is called with a small delay
